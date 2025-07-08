@@ -313,3 +313,19 @@ async def upload_endpoint(
 
     return {'status': 'ok', 'saved': os.path.basename(dest)}
 
+# ---------- deletion api ----------
+
+@app.delete('/media/{title}')
+def delete_media(title: str):
+    """Delete a processed media folder and its contents."""
+    dir_path = os.path.join(MEDIA_DIR, title)
+    if not os.path.isdir(dir_path):
+        raise HTTPException(404, 'Media not found')
+
+    try:
+        shutil.rmtree(dir_path)
+    except Exception as e:
+        raise HTTPException(500, f'Failed to delete: {e}')
+
+    return {"status": "deleted", "title": title}
+
