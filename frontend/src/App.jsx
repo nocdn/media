@@ -36,7 +36,12 @@ export default function App() {
         <p className="text-sm text-gray-500 mt-1 font-jetbrains-mono font-medium mb-3 flex items-center">
           playing:{" "}
           <span className="text-black dark:text-gray-200">{info.name}</span>
-          <span className="ml-auto">watch something else</span>
+          <span
+            className="ml-auto cursor-pointer hover:text-black"
+            onClick={() => {}}
+          >
+            watch something else
+          </span>
         </p>
       )}
 
