@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from "react";
+import { CirclePlay } from "lucide-react";
 
 export default function App() {
   const [info, setInfo] = useState(null);
   const [processing, setProcessing] = useState(false);
-  const [showMenu, setShowMenu] = useState(false);
+  const [showMenu, setShowMenu] = useState(true);
   const [mediaList, setMediaList] = useState([]);
   const [currentTitle, setCurrentTitle] = useState(null);
   const [hasSubtitle, setHasSubtitle] = useState(false);
@@ -42,10 +43,9 @@ export default function App() {
   };
 
   const toggleMenu = () => {
-    if (!showMenu && mediaList.length === 0) {
+    if (mediaList.length === 0) {
       fetchMedia();
     }
-    setShowMenu(!showMenu);
   };
 
   const selectVideo = async (title) => {
@@ -79,12 +79,15 @@ export default function App() {
       {info && !processing && (
         <p className="text-sm text-gray-500 mt-1 font-jetbrains-mono font-medium mb-3 flex items-center">
           playing:{" "}
-          <span className="text-black dark:text-gray-200">
+          <span className="text-black dark:text-gray-200 ml-1.5">
             {currentTitle ? `${currentTitle}.mp4` : info?.name}
           </span>
           <span
-            className="ml-auto cursor-pointer hover:text-black"
+            className="ml-auto cursor-pointer hover:text-black mr-2"
             onClick={toggleMenu}
+            style={{
+              display: mediaList.length > 0 ? "none" : "inline",
+            }}
           >
             watch something else
           </span>
@@ -92,36 +95,44 @@ export default function App() {
       )}
 
       {!processing && (
-        <video
-          width="860"
-          controls
-          src={videoSrc}
-          className="rounded-md"
-          crossOrigin="anonymous"
-        >
-          {hasSubtitle && (
-            <track
-              label="Subtitles"
-              kind="subtitles"
-              srcLang="en"
-              src={subtitleSrc}
-              default
-            />
-          )}
-        </video>
-      )}
-
-      {showMenu && (
-        <div className="absolute top-16 right-0 w-64 h-[480px] bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow overflow-y-auto rounded-md p-2">
-          {mediaList.map((name) => (
-            <div
-              key={name}
-              className="px-2 py-2 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
-              onClick={() => selectVideo(name)}
-            >
-              {name}
-            </div>
-          ))}
+        <div className="flex justify-center">
+          <video
+            width="860"
+            controls
+            src={videoSrc}
+            className="rounded-md"
+            crossOrigin="anonymous"
+          >
+            {hasSubtitle && (
+              <track
+                label="Subtitles"
+                kind="subtitles"
+                srcLang="en"
+                src={subtitleSrc}
+                default
+              />
+            )}
+          </video>
+          <div className="flex flex-col gap-1 ml-2 font-geist font-medium">
+            {mediaList.length > 0 && (
+              <p className="font-jetbrains-mono text-gray-500 font-semibold text-[15px] pl-1.5">
+                AVAILABLE MEDIA
+              </p>
+            )}
+            {mediaList.map((name) => (
+              <div
+                key={name}
+                className="px-2 py-1 cursor-pointer flex items-center gap-2 group"
+                onClick={() => selectVideo(name)}
+              >
+                <CirclePlay
+                  className="w-4 h-4 group-hover:opacity-100 opacity-60 transition-opacity"
+                  strokeWidth={2.25}
+                />
+                {name}
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>
