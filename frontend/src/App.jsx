@@ -113,10 +113,11 @@ export default function App() {
               />
             )}
           </video>
-          <div className="flex flex-col gap-1 ml-2 font-geist font-medium">
+          <div className="flex flex-col ml-2 font-geist font-medium">
             {mediaList.length > 0 && (
-              <p className="font-jetbrains-mono text-gray-500 font-semibold text-[15px] pl-1.5">
-                AVAILABLE MEDIA
+              <p className="font-jetbrains-mono text-gray-600 font-semibold text-[15px] pl-1.5 mb-1.5">
+                AVAILABLE MEDIA{" "}
+                <span className="text-gray-400">(click any to play)</span>
               </p>
             )}
             {mediaList.map((name) => (

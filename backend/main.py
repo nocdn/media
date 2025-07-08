@@ -9,7 +9,10 @@ from watchdog.events import FileSystemEventHandler
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi import UploadFile, File, Body
 from typing import Optional
+import shutil
+import requests
 
 BASE_DIR = os.path.dirname(__file__)
 UPLOADS_DIR = os.path.join(BASE_DIR, 'uploads')
@@ -250,4 +253,63 @@ def latest_title() -> Optional[str]:
 @app.get('/media')
 def list_media():
     return {"files": list_media_dirs()}
+
+# ---------- upload api ----------
+
+def _unique_dest(name: str) -> str:
+    """Return a unique path in UPLOADS_DIR avoiding collisions."""
+    base, ext = os.path.splitext(name)
+    candidate = os.path.join(UPLOADS_DIR, name)
+    while os.path.exists(candidate):
+        candidate = os.path.join(UPLOADS_DIR, f"{base}_{uuid.uuid4().hex[:6]}{ext}")
+    return candidate
+
+@app.post('/upload')
+async def upload_endpoint(
+    file: UploadFile | None = File(None),
+    url: str | None = Body(None),
+):
+    """Upload a video via multipart file or remote URL.
+
+    • Multipart: `curl -F "file=@/path/video.mkv" http://server/upload`
+    • Remote URL: `curl -H "Content-Type: application/json" -d '{"url":"https://.../video.mp4"}' http://server/upload`
+    """
+
+    if file is None and url is None:
+        raise HTTPException(400, 'Provide either file or url')
+
+    if file is not None and url is not None:
+        raise HTTPException(400, 'Provide only one of file or url')
+
+    if file is not None:
+        dest = _unique_dest(file.filename)
+        with open(dest, 'wb') as out:
+            # Use shutil to copy file efficiently
+            shutil.copyfileobj(file.file, out)
+        return {'status': 'ok', 'saved': os.path.basename(dest)}
+
+    # --- url path ---
+    try:
+        resp = requests.get(url, stream=True, timeout=30)
+    except Exception as e:
+        raise HTTPException(400, f'Error fetching url: {e}')
+
+    if resp.status_code != 200:
+        raise HTTPException(400, f'Failed to download – status {resp.status_code}')
+
+    # Determine filename
+    filename = url.split('/')[-1].split('?')[0] or f'{uuid.uuid4().hex}.video'
+    dest = _unique_dest(filename)
+
+    try:
+        with open(dest, 'wb') as f:
+            for chunk in resp.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+    except Exception as e:
+        if os.path.exists(dest):
+            os.remove(dest)
+        raise HTTPException(500, f'Failed to save file: {e}')
+
+    return {'status': 'ok', 'saved': os.path.basename(dest)}
 
