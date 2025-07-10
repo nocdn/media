@@ -18,13 +18,13 @@ cd backend
 uv venv && source .venv/bin/activate
 uv pip install -r requirements.txt
 
-# 2. start backend (http://localhost:8000)
-uvicorn main:app --reload
+# 2. start backend (http://localhost:9420)
+uvicorn main:app --reload --port 9420
 
 # 3. start frontend in another shell
 cd ../frontend
 bun install
-bun run dev   # http://localhost:5173 by default
+bun run dev   # http://localhost:9410 by default
 ```
 
 ---

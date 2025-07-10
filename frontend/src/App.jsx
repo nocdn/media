@@ -12,7 +12,7 @@ export default function App() {
   useEffect(() => {
     const load = async () => {
       try {
-        const res = await fetch("http://localhost:8000/current");
+        const res = await fetch("/api/current");
         if (!res.ok) return;
         const data = await res.json();
         if (data.processing) {
@@ -34,7 +34,7 @@ export default function App() {
 
   const fetchMedia = async () => {
     try {
-      const res = await fetch("http://localhost:8000/media");
+      const res = await fetch("/api/media");
       if (res.ok) {
         const data = await res.json();
         setMediaList(data.files || []);
@@ -53,7 +53,7 @@ export default function App() {
     setProcessing(false);
     setCurrentTitle(title);
     try {
-      const res = await fetch(`http://localhost:8000/subtitle/${title}`, {
+      const res = await fetch(`/api/subtitle/${title}`, {
         method: "HEAD",
       });
       setHasSubtitle(res.ok);
@@ -62,12 +62,10 @@ export default function App() {
     }
   };
 
-  const videoSrc = currentTitle
-    ? `http://localhost:8000/video/${currentTitle}`
-    : `http://localhost:8000/video`;
+  const videoSrc = currentTitle ? `/api/video/${currentTitle}` : `/api/video`;
   const subtitleSrc = currentTitle
-    ? `http://localhost:8000/subtitle/${currentTitle}`
-    : `http://localhost:8000/subtitle`;
+    ? `/api/subtitle/${currentTitle}`
+    : `/api/subtitle`;
 
   return (
     <div className="p-4 font-geist relative">
