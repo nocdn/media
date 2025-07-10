@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { CirclePlay } from "lucide-react";
 
 export default function App() {
@@ -8,6 +8,7 @@ export default function App() {
   const [mediaList, setMediaList] = useState([]);
   const [currentTitle, setCurrentTitle] = useState(null);
   const [hasSubtitle, setHasSubtitle] = useState(false);
+  const pollInterval = useRef(null);
 
   useEffect(() => {
     const load = async () => {
@@ -28,8 +29,8 @@ export default function App() {
 
     load();
 
-    const id = setInterval(load, 3000);
-    return () => clearInterval(id);
+    pollInterval.current = setInterval(load, 3000);
+    return () => clearInterval(pollInterval.current);
   }, []);
 
   const fetchMedia = async () => {
@@ -49,6 +50,9 @@ export default function App() {
   };
 
   const selectVideo = async (title) => {
+    if (pollInterval.current) {
+      clearInterval(pollInterval.current);
+    }
     setShowMenu(false);
     setProcessing(false);
     setCurrentTitle(title);

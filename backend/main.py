@@ -209,14 +209,14 @@ def current():
     else:
         return {"processing": True, "name": title}
 
-@app.get('/subtitle')
+@app.api_route('/subtitle', methods=['GET', 'HEAD'])
 def subtitle_latest():
     title = latest_title()
     if title is None:
         raise HTTPException(404, 'No subtitles')
     return subtitle_title(title)
 
-@app.get('/subtitle/{title}')
+@app.api_route('/subtitle/{title}', methods=['GET', 'HEAD'])
 def subtitle_title(title: str):
     vpath = vtt_path(title)
     if not os.path.exists(vpath):
