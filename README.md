@@ -132,3 +132,27 @@ backend/
 
 - Drop or upload any `.mkv` / `.mp4` into `uploads/` (or use `/upload`).
 - The watcher converts & moves output into `media/<title>/` and cleans up the upload.
+
+---
+
+## Running with Docker
+
+The repository now ships with a ready-to-use `docker-compose.yml` that builds and runs both the FastAPI backend and the React frontend.
+
+```bash
+# 1. build images & start containers
+docker compose up -d --build
+
+# 2. open the app
+#    frontend → http://localhost:9410
+#    backend  → http://localhost:9420 (exposed for API calls)
+```
+
+### What the compose file does
+
+1. **backend** – builds from `backend/Dockerfile` (Python 3.12 slim + ffmpeg), exposes **9420**.
+   - Mounts `backend/uploads/` and `backend/media/` as bind-mounts so your videos survive container restarts.
+2. **frontend** – multi-stage build that compiles the Vite/React app with Bun and serves the static files via **nginx** on port **9410**.
+   - All requests starting with `/api` are transparently proxied to the backend (the same rewrite logic used by Vite’s dev-server).
+
+> Tip: You can inspect logs with `docker compose logs -f backend` or `docker compose logs -f frontend`.

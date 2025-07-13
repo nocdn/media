@@ -1,0 +1,24 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: ./backend
+    container_name: media-backend
+    ports:
+      - "9420:9420"
+    # Persist uploads & processed media on host so they survive container restarts
+    volumes:
+      - ./backend/uploads:/app/uploads
+      - ./backend/media:/app/media
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: media-frontend
+    ports:
+      - "9410:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
