@@ -1,10 +1,12 @@
 import React, { useEffect, useState, useRef } from "react";
 import { CirclePlay } from "lucide-react";
+import Spinner from "./spinner";
 
 export default function App() {
   const [info, setInfo] = useState(null);
   const [processing, setProcessing] = useState(false);
   const [mediaList, setMediaList] = useState([]);
+  const [mediaListLoading, setMediaListLoading] = useState(false);
   const [currentTitle, setCurrentTitle] = useState(null);
   const [hasSubtitle, setHasSubtitle] = useState(false);
 
@@ -30,6 +32,7 @@ export default function App() {
   };
 
   const fetchMedia = async () => {
+    setMediaListLoading(true);
     try {
       const res = await fetch("/api/media");
       if (res.ok) {
@@ -37,6 +40,7 @@ export default function App() {
         setMediaList(data.files || []);
       }
     } catch (_) {}
+    setMediaListLoading(false);
   };
 
   // ---------- effects ----------
@@ -46,6 +50,10 @@ export default function App() {
     pollCurrent();
     pollRef.current = setInterval(pollCurrent, 3000);
     return () => clearInterval(pollRef.current);
+  }, []);
+
+  useEffect(() => {
+    fetchMedia();
   }, []);
 
   // whenever title changes → reload video element
@@ -90,20 +98,18 @@ export default function App() {
         <p className="text-sm text-yellow-400 mt-1 mb-3">processing video…</p>
       )}
 
+      {!info && !processing && (
+        <p className="text-sm text-gray-500 mt-1 font-jetbrains-mono font-medium mb-3">
+          loading video...
+        </p>
+      )}
+
       {info && !processing && (
         <p className="text-sm text-gray-500 mt-1 font-jetbrains-mono font-medium mb-3 flex items-center">
           playing:{" "}
           <span className="text-black dark:text-gray-200 ml-1.5">
             {currentTitle ? `${currentTitle}.mp4` : info?.name}
           </span>
-          {mediaList.length === 0 && (
-            <span
-              className="ml-auto cursor-pointer hover:text-black mr-2"
-              onClick={fetchMedia}
-            >
-              watch something else
-            </span>
-          )}
         </p>
       )}
 
@@ -133,12 +139,13 @@ export default function App() {
           </video>
 
           <div className="flex flex-col ml-2 font-geist font-medium">
-            {mediaList.length > 0 && (
-              <p className="font-jetbrains-mono text-gray-600 font-semibold text-[15px] pl-1.5 mb-1.5">
-                AVAILABLE MEDIA{" "}
+            <p className="font-jetbrains-mono text-gray-600 font-semibold text-[15px] pl-1.5 mb-1.5 flex items-center gap-2">
+              <span>AVAILABLE MEDIA</span>
+              {mediaListLoading && <Spinner />}
+              {!mediaListLoading && mediaList.length > 0 && (
                 <span className="text-gray-400">(click any to play)</span>
-              </p>
-            )}
+              )}
+            </p>
             {mediaList.map((name) => (
               <div
                 key={name}
