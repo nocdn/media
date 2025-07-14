@@ -4,328 +4,426 @@ import json
 import time
 import subprocess
 import threading
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
-from fastapi import FastAPI, HTTPException, Header
-from fastapi.responses import StreamingResponse
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi import UploadFile, File, Body
+import logging
 from typing import Optional
 import shutil
 import requests
 
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+
+from fastapi import FastAPI, HTTPException, Header, UploadFile, File, Body
+from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
+
+# ---------- logging setup ----------
+logging.basicConfig(
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    level=logging.DEBUG,  # change to INFO in prod
+)
+log = logging.getLogger(__name__)
+
+# ---------- dirs ----------
 BASE_DIR = os.path.dirname(__file__)
-UPLOADS_DIR = os.path.join(BASE_DIR, 'uploads')
-MEDIA_DIR = os.path.join(BASE_DIR, 'media')
+UPLOADS_DIR = os.path.join(BASE_DIR, "uploads")
+MEDIA_DIR = os.path.join(BASE_DIR, "media")
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 os.makedirs(MEDIA_DIR, exist_ok=True)
 
+# ---------- fastapi ----------
 app = FastAPI()
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=['*'],
-    allow_methods=['*'],
-    allow_headers=['*']
+    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
 )
 
 # ---------- helpers ----------
 
+
 def run(cmd: list[str]) -> tuple[int, str, str]:
+    """run subprocess and capture out/err"""
+    log.debug("cmd ▶ %s", " ".join(cmd))
     res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    return res.returncode, res.stdout.decode(), res.stderr.decode()
+    out, err = res.stdout.decode(), res.stderr.decode()
+    if res.returncode:
+        log.warning("cmd ❌ rc=%s stderr=%s", res.returncode, err.strip())
+    return res.returncode, out, err
+
 
 def audio_codec(path: str) -> str | None:
-    rc, out, _ = run([
-        'ffprobe', '-v', 'error',
-        '-select_streams', 'a:0',
-        '-show_entries', 'stream=codec_name',
-        '-of', 'default=noprint_wrappers=1:nokey=1',
-        path
-    ])
+    rc, out, _ = run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=codec_name",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            path,
+        ]
+    )
+    return None if rc else out.strip()
+
+
+def generate_hls(mp4_src: str, dest_dir: str):
+    """split mp4 into fmp4 hls playlist w/out re-encoding"""
+    hls_dir = os.path.join(dest_dir, "hls")
+    os.makedirs(hls_dir, exist_ok=True)
+    hls_path = os.path.join(hls_dir, "index.m3u8")
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        mp4_src,
+        "-c",
+        "copy",
+        "-f",
+        "hls",
+        "-hls_time",
+        "6",
+        "-hls_segment_type",
+        "fmp4",
+        "-hls_flags",
+        "+independent_segments",
+        "-hls_playlist_type",
+        "vod",
+        hls_path,
+    ]
+    rc, _, _ = run(cmd)
     if rc:
-        return None
-    return out.strip()
+        log.error("hls build failed for %s", mp4_src)
+    else:
+        log.info("hls ready → %s", hls_path)
+
 
 def process(src: str):
-    """Convert or move uploaded video to MEDIA_DIR structure and extract subtitles."""
+    """convert/upload → mp4, build hls, extract subs"""
     ext = os.path.splitext(src)[1].lower()
-    if ext not in {'.mkv', '.mp4'}:
+    if ext not in {".mkv", ".mp4"}:
+        log.info("skip (not video) %s", src)
         return
 
     name = os.path.splitext(os.path.basename(src))[0]
     dest_dir = os.path.join(MEDIA_DIR, name)
     os.makedirs(dest_dir, exist_ok=True)
-
     dst_mp4 = os.path.join(dest_dir, f"{name}.mp4")
 
-    # If file is already an MP4 and can be copied directly
-    if ext == '.mp4':
-        cmd = ['ffmpeg', '-y', '-i', src, '-c', 'copy', '-movflags', '+faststart', dst_mp4]
-    else:  # .mkv → .mp4 (rewrap / transcode if needed)
+    # choose copy vs transcode for audio
+    if ext == ".mp4":
+        cmd = ["ffmpeg", "-y", "-i", src, "-c", "copy", "-movflags", "+faststart", dst_mp4]
+    else:
         acodec = audio_codec(src)
-        if acodec == 'aac':
-            cmd = ['ffmpeg', '-y', '-i', src, '-c', 'copy', '-movflags', '+faststart', dst_mp4]
+        if acodec == "aac":
+            cmd = ["ffmpeg", "-y", "-i", src, "-c", "copy", "-movflags", "+faststart", dst_mp4]
         else:
             cmd = [
-                'ffmpeg', '-y', '-i', src,
-                '-c:v', 'copy',
-                '-c:a', 'aac', '-ac', '2', '-b:a', '128k', '-ar', '44100',
-                '-movflags', '+faststart', dst_mp4
+                "ffmpeg",
+                "-y",
+                "-i",
+                src,
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                "-ac",
+                "2",
+                "-b:a",
+                "128k",
+                "-ar",
+                "44100",
+                "-movflags",
+                "+faststart",
+                dst_mp4,
             ]
 
-    rc, _, err = run(cmd)
+    rc, _, _ = run(cmd)
     if rc:
-        print(f"Error processing {src}: {err}")
+        log.error("mp4 prep failed for %s", src)
         return
 
-    print(f"Successfully prepared {dst_mp4}")
+    log.info("mp4 ready → %s", dst_mp4)
 
-    # Attempt subtitle extraction (first subtitle stream → WebVTT)
-    rc2, meta_json, _ = run([
-        'ffprobe', '-v', 'error',
-        '-select_streams', 's',
-        '-show_entries', 'stream=index,codec_name',
-        '-of', 'json', src
-    ])
+    # hls
+    generate_hls(dst_mp4, dest_dir)
 
+    # subtitles
+    rc2, meta_json, _ = run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "s",
+            "-show_entries",
+            "stream=index,codec_name",
+            "-of",
+            "json",
+            src,
+        ]
+    )
     try:
-        subs_info = json.loads(meta_json)
+        has_subs = bool(json.loads(meta_json).get("streams"))
     except Exception:
-        subs_info = {}
+        has_subs = False
 
-    streams = subs_info.get('streams', [])
-    if streams:
+    if has_subs:
         vtt_path = os.path.join(dest_dir, f"{name}.vtt")
-        rc3, _, err3 = run([
-            'ffmpeg', '-y', '-i', src,
-            '-map', '0:s:0',
-            '-c:s', 'webvtt', vtt_path
-        ])
+        rc3, _, _ = run(["ffmpeg", "-y", "-i", src, "-map", "0:s:0", "-c:s", "webvtt", vtt_path])
         if rc3:
-            print(f"Failed to extract subtitles from {src}: {err3}")
+            log.warning("sub extraction failed for %s", src)
         else:
-            print(f"Subtitles extracted → {vtt_path}")
+            log.info("subs extracted → %s", vtt_path)
 
-    # Cleanup original upload
+    # cleanup
     os.remove(src)
+    log.debug("upload removed %s", src)
 
-# ---------- file watcher ----------
+
+# ---------- watcher ----------
+
 
 class VideoHandler(FileSystemEventHandler):
     def on_created(self, event):
         if event.is_directory:
             return
-        _, ext = os.path.splitext(event.src_path)
-        if ext.lower() in {'.mkv', '.mp4'}:
-            print(f"New video detected: {event.src_path}")
-            # Give the file a moment to finish writing completely
-            time.sleep(1)
-            process(event.src_path)
+        log.info("new file detected %s", event.src_path)
+        time.sleep(1)  # wait for write
+        process(event.src_path)
+
 
 def start_watcher():
-    event_handler = VideoHandler()
-    observer = Observer()
-    observer.schedule(event_handler, UPLOADS_DIR, recursive=False)
-    observer.start()
-    print(f"Watching directory: {UPLOADS_DIR}")
+    obs = Observer()
+    obs.schedule(VideoHandler(), UPLOADS_DIR, recursive=False)
+    obs.start()
+    log.info("watching %s", UPLOADS_DIR)
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        observer.stop()
-    observer.join()
+        obs.stop()
+    obs.join()
 
-# Run the watcher in a separate thread
-watcher_thread = threading.Thread(target=start_watcher, daemon=True)
-watcher_thread.start()
 
-# ---------- api ----------
+threading.Thread(target=start_watcher, daemon=True).start()
 
-@app.get('/video')
-def stream_latest(range_header: str | None = Header(None, alias='Range')):
+# ---------- util ----------
+
+
+def list_media_dirs() -> list[str]:
+    dirs = [d for d in os.listdir(MEDIA_DIR) if os.path.isdir(os.path.join(MEDIA_DIR, d))]
+    dirs.sort(key=lambda d: os.path.getmtime(os.path.join(MEDIA_DIR, d)), reverse=True)
+    return dirs
+
+
+def mp4_path(title: str) -> str:
+    return os.path.join(MEDIA_DIR, title, f"{title}.mp4")
+
+
+def vtt_path(title: str) -> str:
+    return os.path.join(MEDIA_DIR, title, f"{title}.vtt")
+
+
+def latest_title() -> Optional[str]:
+    dirs = list_media_dirs()
+    return dirs[0] if dirs else None
+
+
+def _resolve_title(title: str) -> str:
+    return latest_title() if title == "latest" else title
+
+
+# ---------- hls endpoints ----------
+
+
+@app.get("/hls/{title}/index.m3u8")
+def hls_playlist(title: str):
+    real = _resolve_title(title)
+    path = os.path.join(MEDIA_DIR, real, "hls", "index.m3u8")
+    log.debug("playlist req %s -> %s", title, path)
+    if not os.path.exists(path):
+        raise HTTPException(404, "playlist not found")
+    return FileResponse(path, media_type="application/x-mpegURL")
+
+
+@app.get("/hls/{title}/{segment:path}")
+def hls_segment(title: str, segment: str):
+    real = _resolve_title(title)
+    path = os.path.join(MEDIA_DIR, real, "hls", segment)
+    log.debug("segment req %s/%s", real, segment)
+    if not os.path.exists(path):
+        raise HTTPException(404, "segment not found")
+    return FileResponse(path, media_type="video/iso.segment")
+
+
+# ---------- video streaming ----------
+
+
+@app.get("/video")
+def stream_latest(range_header: str | None = Header(None, alias="Range")):
     title = latest_title()
     if title is None:
-        raise HTTPException(404, 'No MP4 video found')
-
+        raise HTTPException(404, "no mp4")
     return stream_video(title, range_header)
 
-@app.get('/video/{title}')
-def stream_video(title: str, range_header: str | None = Header(None, alias='Range')):
+
+@app.get("/video/{title}")
+def stream_video(title: str, range_header: str | None = Header(None, alias="Range")):
     path = mp4_path(title)
     if not os.path.exists(path):
-        raise HTTPException(404, 'Video not found')
+        raise HTTPException(404, "video not found")
 
     size = os.path.getsize(path)
+    log.debug("mp4 request %s size=%s", title, size)
 
     if range_header is None:
-        # --- Full file (200) ---
         def file_iter():
-            with open(path, 'rb') as f:
+            with open(path, "rb") as f:
                 yield from f
-        headers = {
-            'Content-Length': str(size),
-            'Accept-Ranges': 'bytes'
-        }
-        return StreamingResponse(file_iter(), media_type='video/mp4', headers=headers)
 
-    # --- Partial (206) ---
-    range_header = range_header.replace('bytes=', '')
-    start_str, end_str = range_header.split('-')
+        headers = {"Content-Length": str(size), "Accept-Ranges": "bytes"}
+        return StreamingResponse(file_iter(), media_type="video/mp4", headers=headers)
+
+    range_header = range_header.replace("bytes=", "")
+    start_str, end_str = range_header.split("-")
     start = int(start_str)
     end = int(end_str) if end_str else size - 1
-
-    # Sanity bounds
     end = min(end, size - 1)
     chunk = end - start + 1
 
     def chunk_iter():
-        with open(path, 'rb') as f:
+        with open(path, "rb") as f:
             f.seek(start)
             remaining = chunk
             while remaining:
-                data = f.read(min(1024*1024, remaining))
+                data = f.read(min(1024 * 1024, remaining))
                 if not data:
                     break
                 remaining -= len(data)
                 yield data
 
     headers = {
-        'Content-Range': f'bytes {start}-{end}/{size}',
-        'Accept-Ranges': 'bytes',
-        'Content-Length': str(chunk)
+        "Content-Range": f"bytes {start}-{end}/{size}",
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(chunk),
     }
-    return StreamingResponse(chunk_iter(), status_code=206, media_type='video/mp4', headers=headers)
+    return StreamingResponse(chunk_iter(), status_code=206, media_type="video/mp4", headers=headers)
 
-@app.get('/current')
+
+# ---------- current / media ----------
+
+
+@app.get("/current")
 def current():
     title = latest_title()
     if title is None:
-        raise HTTPException(404, 'No media present')
+        raise HTTPException(404, "no media")
 
     mp4_exists = os.path.exists(mp4_path(title))
-    if mp4_exists:
-        sub_exists = os.path.exists(vtt_path(title))
-        return {"processing": False, "name": f"{title}.mp4", "title": title, "subtitle": sub_exists}
-    else:
-        return {"processing": True, "name": title}
+    sub_exists = os.path.exists(vtt_path(title))
+    return {
+        "processing": not mp4_exists,
+        "name": f"{title}.mp4",
+        "title": title,
+        "subtitle": sub_exists,
+    }
 
-@app.api_route('/subtitle', methods=['GET', 'HEAD'])
-def subtitle_latest():
-    title = latest_title()
-    if title is None:
-        raise HTTPException(404, 'No subtitles')
-    return subtitle_title(title)
 
-@app.api_route('/subtitle/{title}', methods=['GET', 'HEAD'])
-def subtitle_title(title: str):
-    vpath = vtt_path(title)
-    if not os.path.exists(vpath):
-        raise HTTPException(404, 'No subtitles')
-
-    def sub_iter():
-        with open(vpath, 'rb') as f:
-            yield from f
-    size = os.path.getsize(vpath)
-    return StreamingResponse(sub_iter(), media_type='text/vtt', headers={
-        'Content-Length': str(size),
-        'Access-Control-Allow-Origin': '*'
-    })
-
-# ---------- media helpers ----------
-
-def list_media_dirs() -> list[str]:
-    """Return all media subdirectories sorted by most recently modified (newest first)."""
-    dirs = [d for d in os.listdir(MEDIA_DIR) if os.path.isdir(os.path.join(MEDIA_DIR, d))]
-    dirs.sort(key=lambda d: os.path.getmtime(os.path.join(MEDIA_DIR, d)), reverse=True)
-    return dirs
-
-def mp4_path(title: str) -> str:
-    return os.path.join(MEDIA_DIR, title, f"{title}.mp4")
-
-def vtt_path(title: str) -> str:
-    return os.path.join(MEDIA_DIR, title, f"{title}.vtt")
-
-def latest_title() -> Optional[str]:
-    dirs = list_media_dirs()
-    return dirs[0] if dirs else None
-
-# List all processed media directories (newest first)
-@app.get('/media')
+@app.get("/media")
 def list_media():
     return {"files": list_media_dirs()}
 
-# ---------- upload api ----------
+
+# ---------- subtitles ----------
+
+
+@app.api_route("/subtitle", methods=["GET", "HEAD"])
+def subtitle_latest():
+    title = latest_title()
+    if title is None:
+        raise HTTPException(404, "no subs")
+    return subtitle_title(title)
+
+
+@app.api_route("/subtitle/{title}", methods=["GET", "HEAD"])
+def subtitle_title(title: str):
+    vpath = vtt_path(title)
+    if not os.path.exists(vpath):
+        raise HTTPException(404, "no subs")
+
+    def sub_iter():
+        with open(vpath, "rb") as f:
+            yield from f
+
+    size = os.path.getsize(vpath)
+    return StreamingResponse(
+        sub_iter(), media_type="text/vtt", headers={"Content-Length": str(size)}
+    )
+
+
+# ---------- upload ----------
+
 
 def _unique_dest(name: str) -> str:
-    """Return a unique path in UPLOADS_DIR avoiding collisions."""
     base, ext = os.path.splitext(name)
     candidate = os.path.join(UPLOADS_DIR, name)
     while os.path.exists(candidate):
         candidate = os.path.join(UPLOADS_DIR, f"{base}_{uuid.uuid4().hex[:6]}{ext}")
     return candidate
 
-@app.post('/upload')
-async def upload_endpoint(
-    file: UploadFile | None = File(None),
-    url: str | None = Body(None),
-):
-    """Upload a video via multipart file or remote URL.
 
-    • Multipart: `curl -F "file=@/path/video.mkv" http://server/upload`
-    • Remote URL: `curl -H "Content-Type: application/json" -d '{"url":"https://.../video.mp4"}' http://server/upload`
-    """
-
+@app.post("/upload")
+async def upload_endpoint(file: UploadFile | None = File(None), url: str | None = Body(None)):
     if file is None and url is None:
-        raise HTTPException(400, 'Provide either file or url')
+        raise HTTPException(400, "provide file or url")
 
     if file is not None and url is not None:
-        raise HTTPException(400, 'Provide only one of file or url')
+        raise HTTPException(400, "pick one of file / url")
 
+    # multipart
     if file is not None:
         dest = _unique_dest(file.filename)
-        with open(dest, 'wb') as out:
-            # Use shutil to copy file efficiently
+        with open(dest, "wb") as out:
             shutil.copyfileobj(file.file, out)
-        return {'status': 'ok', 'saved': os.path.basename(dest)}
+        log.info("upload saved %s", dest)
+        return {"status": "ok", "saved": os.path.basename(dest)}
 
-    # --- url path ---
+    # remote url
     try:
         resp = requests.get(url, stream=True, timeout=30)
     except Exception as e:
-        raise HTTPException(400, f'Error fetching url: {e}')
+        raise HTTPException(400, f"fetch error: {e}")
 
     if resp.status_code != 200:
-        raise HTTPException(400, f'Failed to download – status {resp.status_code}')
+        raise HTTPException(400, f"status {resp.status_code}")
 
-    # Determine filename
-    filename = url.split('/')[-1].split('?')[0] or f'{uuid.uuid4().hex}.video'
+    filename = url.split("/")[-1].split("?")[0] or f"{uuid.uuid4().hex}.video"
     dest = _unique_dest(filename)
 
     try:
-        with open(dest, 'wb') as f:
+        with open(dest, "wb") as f:
             for chunk in resp.iter_content(chunk_size=8192):
                 if chunk:
                     f.write(chunk)
     except Exception as e:
         if os.path.exists(dest):
             os.remove(dest)
-        raise HTTPException(500, f'Failed to save file: {e}')
+        raise HTTPException(500, f"save fail: {e}")
 
-    return {'status': 'ok', 'saved': os.path.basename(dest)}
+    log.info("remote saved %s", dest)
+    return {"status": "ok", "saved": os.path.basename(dest)}
 
-# ---------- deletion api ----------
 
-@app.delete('/media/{title}')
+# ---------- delete ----------
+
+
+@app.delete("/media/{title}")
 def delete_media(title: str):
-    """Delete a processed media folder and its contents."""
     dir_path = os.path.join(MEDIA_DIR, title)
     if not os.path.isdir(dir_path):
-        raise HTTPException(404, 'Media not found')
-
-    try:
-        shutil.rmtree(dir_path)
-    except Exception as e:
-        raise HTTPException(500, f'Failed to delete: {e}')
-
+        raise HTTPException(404, "not found")
+    shutil.rmtree(dir_path)
+    log.info("deleted %s", dir_path)
     return {"status": "deleted", "title": title}
-

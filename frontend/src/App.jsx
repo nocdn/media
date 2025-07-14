@@ -4,34 +4,30 @@ import { CirclePlay } from "lucide-react";
 export default function App() {
   const [info, setInfo] = useState(null);
   const [processing, setProcessing] = useState(false);
-  const [showMenu, setShowMenu] = useState(true);
   const [mediaList, setMediaList] = useState([]);
   const [currentTitle, setCurrentTitle] = useState(null);
   const [hasSubtitle, setHasSubtitle] = useState(false);
-  const pollInterval = useRef(null);
 
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const res = await fetch("/api/current");
-        if (!res.ok) return;
-        const data = await res.json();
-        if (data.processing) {
-          setProcessing(true);
-        } else {
-          setProcessing(false);
-          setInfo(data);
-          setCurrentTitle(data.title ?? data.name.replace(/\.mp4$/, ""));
-          setHasSubtitle(!!data.subtitle);
-        }
-      } catch (_) {}
-    };
+  const pollRef = useRef(null);
+  const videoRef = useRef(null);
 
-    load();
+  // ---------- helpers ----------
 
-    pollInterval.current = setInterval(load, 3000);
-    return () => clearInterval(pollInterval.current);
-  }, []);
+  const pollCurrent = async () => {
+    try {
+      const res = await fetch("/api/current");
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.processing) {
+        setProcessing(true);
+        return;
+      }
+      setProcessing(false);
+      setInfo(data);
+      setCurrentTitle(data.title ?? data.name.replace(/\.mp4$/, ""));
+      setHasSubtitle(!!data.subtitle);
+    } catch (_) {}
+  };
 
   const fetchMedia = async () => {
     try {
@@ -43,37 +39,53 @@ export default function App() {
     } catch (_) {}
   };
 
-  const toggleMenu = () => {
-    if (mediaList.length === 0) {
-      fetchMedia();
+  // ---------- effects ----------
+
+  // start / stop polling
+  useEffect(() => {
+    pollCurrent();
+    pollRef.current = setInterval(pollCurrent, 3000);
+    return () => clearInterval(pollRef.current);
+  }, []);
+
+  // whenever title changes → reload video element
+  useEffect(() => {
+    if (videoRef.current) {
+      console.debug("🔁 switching to", currentTitle ?? "latest");
+      videoRef.current.load();
     }
-  };
+  }, [currentTitle]);
+
+  // ---------- ui handlers ----------
 
   const selectVideo = async (title) => {
-    if (pollInterval.current) {
-      clearInterval(pollInterval.current);
-    }
-    setShowMenu(false);
+    clearInterval(pollRef.current);
     setProcessing(false);
     setCurrentTitle(title);
     try {
-      const res = await fetch(`/api/subtitle/${title}`, {
-        method: "HEAD",
-      });
+      const res = await fetch(`/api/subtitle/${title}`, { method: "HEAD" });
       setHasSubtitle(res.ok);
     } catch {
       setHasSubtitle(false);
     }
   };
 
+  // ---------- paths ----------
+
   const videoSrc = currentTitle ? `/api/video/${currentTitle}` : `/api/video`;
+  const hlsSrc = currentTitle
+    ? `/hls/${currentTitle}/index.m3u8`
+    : `/hls/latest/index.m3u8`;
   const subtitleSrc = currentTitle
     ? `/api/subtitle/${currentTitle}`
     : `/api/subtitle`;
 
+  // ---------- render ----------
+
   return (
-    <div className="p-4 font-geist relative">
-      <h1 className="mb-0 font-semibold font-geist">video stream</h1>
+    <div className="p-4 font-geist">
+      <h1 className="mb-0 font-semibold">video stream</h1>
+
       {processing && (
         <p className="text-sm text-yellow-400 mt-1 mb-3">processing video…</p>
       )}
@@ -84,27 +96,31 @@ export default function App() {
           <span className="text-black dark:text-gray-200 ml-1.5">
             {currentTitle ? `${currentTitle}.mp4` : info?.name}
           </span>
-          <span
-            className="ml-auto cursor-pointer hover:text-black mr-2"
-            onClick={toggleMenu}
-            style={{
-              display: mediaList.length > 0 ? "none" : "inline",
-            }}
-          >
-            watch something else
-          </span>
+          {mediaList.length === 0 && (
+            <span
+              className="ml-auto cursor-pointer hover:text-black mr-2"
+              onClick={fetchMedia}
+            >
+              watch something else
+            </span>
+          )}
         </p>
       )}
 
       {!processing && (
         <div className="flex justify-center">
           <video
+            key={currentTitle || "latest"} // force remount when title changes
+            ref={videoRef}
             width="860"
             controls
-            src={videoSrc}
             className="rounded-md"
             crossOrigin="anonymous"
           >
+            {/* hls first (safari/ios) */}
+            <source src={hlsSrc} type="application/x-mpegURL" />
+            {/* mp4 fallback */}
+            <source src={videoSrc} type="video/mp4" />
             {hasSubtitle && (
               <track
                 label="Subtitles"
@@ -115,6 +131,7 @@ export default function App() {
               />
             )}
           </video>
+
           <div className="flex flex-col ml-2 font-geist font-medium">
             {mediaList.length > 0 && (
               <p className="font-jetbrains-mono text-gray-600 font-semibold text-[15px] pl-1.5 mb-1.5">
