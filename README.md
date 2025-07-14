@@ -1,12 +1,17 @@
 # Media
 
-> a simple media server that converts videos to mp4 and serves them in a web-client.
+> a tiny self-hosted media server – drop an `.mkv`/`.mp4` into **uploads/** and get an MP4 + HLS streamable in any browser (Safari included) through a minimalist web-client.
 
-This project consists of:
+This repository now contains:
 
-- **backend/** – FastAPI service that watches an `uploads/` directory, converts videos (MKV → MP4), extracts subtitles, and serves/streams media.
-- **frontend/** – React + Vite web-client that auto-plays the newest video and lets you pick others.
-- **media/** – directory that contains the converted media.
+- **backend/** – FastAPI service that
+  - watches the `uploads/` folder
+  - converts/rewraps videos (MKV → MP4, AAC audio if needed)
+  - generates an **HLS (fMP4) playlist** for Safari/iOS (no re-encode)
+  - extracts subtitles (→ WebVTT)
+  - streams MP4 or HLS + subs on demand.
+- **frontend/** – React + Vite client that auto-plays the newest video and lets you pick others (it tries HLS first, MP4 fallback for every other browser).
+- **backend/media/** – ready-to-serve output (`<title>.mp4`, `hls/index.m3u8`, `<title>.vtt` …).
 
 ---
 
@@ -18,141 +23,151 @@ cd backend
 uv venv && source .venv/bin/activate
 uv pip install -r requirements.txt
 
-# 2. start backend (http://localhost:9420)
+# 2. start backend  →  http://localhost:9420
 uvicorn main:app --reload --port 9420
 
-# 3. start frontend in another shell
+# 3. in another shell run the frontend
 cd ../frontend
 bun install
-bun run dev   # http://localhost:9410 by default
+bun run dev           # http://localhost:9410
 ```
 
 ---
 
-## API Endpoints
+## API Endpoints (backend)
 
-> Base URL examples assume the backend is running on `http://localhost:8000`.
+_Base URLs below assume the backend is reachable at `http://localhost:9420`._
 
-### 1. `POST /upload`
+### `POST /upload`
 
-Upload or remotely fetch a video into `backend/uploads/`.
+Put a new file into `backend/uploads/` (the watcher converts it automatically).
 
-_Multipart file upload_
+a) multipart **file** upload
 
 ```bash
 curl -F "file=@/path/to/video.mkv" \
-     http://localhost:8000/upload
+     http://localhost:9420/upload
 ```
 
-_Remote URL fetch_
+b) multipart **URL** field (no local file)
 
 ```bash
-curl -H "Content-Type: application/json" \
-     -d '{"url":"https://example.com/myvideo.mp4"}' \
-     http://localhost:8000/upload
+curl -F "url=https://example.com/myvideo.mp4" \
+     http://localhost:9420/upload
 ```
 
-Response
+c) raw JSON **string** (easiest for scripts)
+
+```bash
+curl http://localhost:9420/upload \
+     -H 'Content-Type: application/json' \
+     --data '"https://example.com/myvideo.mp4"'
+```
+
+d) tiny JSON **object** (old style, still works)
+
+```bash
+curl http://localhost:9420/upload \
+     -H 'Content-Type: application/json' \
+     --data '{"url":"https://example.com/myvideo.mp4"}'
+```
+
+All four return
 
 ```json
 { "status": "ok", "saved": "myvideo.mp4" }
 ```
 
-### 2. `GET /media`
+### `GET /media`
 
-Return a JSON list of processed media folders (newest → oldest).
-
-```bash
-curl http://localhost:8000/media
-# → { "files": ["myvideo", "starwars", ...] }
-```
-
-### 3. `GET /video`
-
-Stream the newest MP4 (HTTP range requests supported).
+List processed media directories (newest → oldest).
 
 ```bash
-curl -O http://localhost:8000/video
+curl http://localhost:9420/media
+# → { "files": ["myvideo", "wicked", ...] }
 ```
 
-### 4. `GET /video/{title}`
+### `GET /video` or `GET /video/{title}`
 
-Stream a specific video (without ".mp4" extension).
+Progressive-download MP4 stream (range requests supported).
 
-```bash
-curl -O http://localhost:8000/video/starwars
-```
+### `GET /hls/latest/index.m3u8` or `GET /hls/{title}/index.m3u8`
 
-### 5. `GET /subtitle`
+HLS playlist for Safari / iOS (segments are under the same `/hls/<title>/…` path).
 
-Subtitles for the newest video (WebVTT).
+### `GET /subtitle` or `GET /subtitle/{title}`
 
-### 6. `GET /subtitle/{title}`
+WebVTT subtitles (if extracted).
 
-Subtitles for a specific title.
+### `GET /current`
 
-A quick HEAD request is useful to check if subtitles exist:
+JSON status for the newest upload.
 
-```bash
-curl -I http://localhost:8000/subtitle/starwars
-```
+### `DELETE /media/{title}`
 
-### 7. `GET /current`
-
-Returns processing status for the newest upload.
-
-```bash
-curl http://localhost:8000/current
-# { "processing": false, "name": "starwars.mp4", "title": "starwars", "subtitle": true }
-```
-
-### 8. `DELETE /media/{title}`
-
-Remove an entire processed media folder.
-
-```bash
-curl -X DELETE http://localhost:8000/media/starwars
-# { "status": "deleted", "title": "starwars" }
-```
+Remove an entire processed folder.
 
 ---
 
-## File-system overview
+## File-system layout
 
 ```
 backend/
-  uploads/    # incoming files (watched)
+  uploads/          # incoming (watched)
   media/
-    ├── starwars/
-    │   ├── starwars.mp4
-    │   └── starwars.vtt
-    └── another-video/
-        └── another-video.mp4
+    wicked/
+      wicked.mp4
+      hls/
+        index.m3u8
+        index0.m4s
+        …
+      wicked.vtt
+    another-video/
+      another-video.mp4
+      hls/
+      …
 ```
 
-- Drop or upload any `.mkv` / `.mp4` into `uploads/` (or use `/upload`).
-- The watcher converts & moves output into `media/<title>/` and cleans up the upload.
+1. Drop/POST any `.mkv`/`.mp4` into **uploads/** (or call `/upload`).
+2. The watcher waits for the file to finish **writing/closing**, then:
+   - prepares `<title>.mp4` (copy video, AAC audio if needed, fast-start)
+   - slices it into **fMP4 HLS** (`hls/index.m3u8`, `index*.m4s`)
+   - extracts the first subtitle stream (`.vtt`) if present
+   - deletes the original upload.
 
 ---
 
 ## Running with Docker
 
-The repository now ships with a ready-to-use `docker-compose.yml` that builds and runs both the FastAPI backend and the React frontend.
+A ready-made **docker-compose.yml** builds and runs both services.
 
 ```bash
-# 1. build images & start containers
 docker compose up -d --build
 
-# 2. open the app
-#    frontend → http://localhost:9410
-#    backend  → http://localhost:9420 (exposed for API calls)
+# open:
+# → frontend  http://localhost:9410
+# → backend   http://localhost:9420
 ```
 
-### What the compose file does
+### Compose details
 
-1. **backend** – builds from `backend/Dockerfile` (Python 3.12 slim + ffmpeg), exposes **9420**.
-   - Mounts `backend/uploads/` and `backend/media/` as bind-mounts so your videos survive container restarts.
-2. **frontend** – multi-stage build that compiles the Vite/React app with Bun and serves the static files via **nginx** on port **9410**.
-   - All requests starting with `/api` are transparently proxied to the backend (the same rewrite logic used by Vite’s dev-server).
+| service  | image                              | port | notes                                                                       |
+| -------- | ---------------------------------- | ---- | --------------------------------------------------------------------------- |
+| backend  | custom (Python 3.12-slim + ffmpeg) | 9420 | bind-mounts `backend/uploads` & `backend/media` so videos survive restarts  |
+| frontend | multi-stage Bun → Nginx            | 9410 | Nginx proxies `/api/*` & `/hls/*` to the backend for a single-origin client |
 
-> Tip: You can inspect logs with `docker compose logs -f backend` or `docker compose logs -f frontend`.
+Check logs with:
+
+```bash
+docker compose logs -f backend
+docker compose logs -f frontend
+```
+
+---
+
+## Browser support
+
+- Safari / iOS → gets HLS automatically.
+- Chrome / Firefox / Edge → fall back to MP4 progressive.
+
+No re-encoding is done; generating HLS is a light copy operation, so the server runs happily even on low-powered VPSs.
