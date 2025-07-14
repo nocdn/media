@@ -12,7 +12,7 @@ import requests
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-from fastapi import FastAPI, HTTPException, Header, UploadFile, File, Body
+from fastapi import FastAPI, HTTPException, Header, UploadFile, File, Body, Request
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -182,18 +182,28 @@ def process(src: str):
     log.debug("upload removed %s", src)
 
 
-# ---------- watcher ----------
-
+# ---------- file watcher ----------
 
 class VideoHandler(FileSystemEventHandler):
-    def on_created(self, event):
-        if event.is_directory:
-            return
-        log.info("new file detected %s", event.src_path)
-        time.sleep(1)  # wait for write
-        process(event.src_path)
+    """wait until the file is completely written before processing"""
 
+    def _maybe_process(self, path: str):
+        _, ext = os.path.splitext(path)
+        if ext.lower() in {".mkv", ".mp4"}:
+            log.info("file ready → %s", path)
+            process(path)
 
+    # closed after writing (most reliable)
+    def on_closed(self, event):
+        if not event.is_directory and event.event_type == "closed":
+            self._maybe_process(event.src_path)
+
+    # in case the file is written elsewhere and moved in
+    def on_moved(self, event):
+        if not event.is_directory:
+            self._maybe_process(event.dest_path)
+
+# start watcher
 def start_watcher():
     obs = Observer()
     obs.schedule(VideoHandler(), UPLOADS_DIR, recursive=False)
@@ -206,8 +216,8 @@ def start_watcher():
         obs.stop()
     obs.join()
 
-
 threading.Thread(target=start_watcher, daemon=True).start()
+
 
 # ---------- util ----------
 
@@ -374,15 +384,50 @@ def _unique_dest(name: str) -> str:
     return candidate
 
 
+# ---------- upload api ----------
+
 @app.post("/upload")
-async def upload_endpoint(file: UploadFile | None = File(None), url: str | None = Body(None)):
+async def upload_endpoint(
+    request: Request,
+    file: UploadFile | None = File(None),
+):
+    """
+    accept either:
+      • multipart file field    → ?file=<UploadFile>
+      • multipart url field     → ?url=<http://...>
+      • raw json string         → "http://..."
+      • json object             → { "url": "http://..." }
+    """
+
+    url: str | None = None
+
+    ct = request.headers.get("content-type", "")
+    is_json = ct.startswith("application/json")
+    is_multipart = ct.startswith("multipart/")
+
+    # --- pull url from json body ---
+    if is_json:
+        try:
+            data = await request.json()
+            if isinstance(data, str):
+                url = data
+            elif isinstance(data, dict):
+                url = data.get("url")
+        except Exception as e:
+            log.debug("json parse error: %s", e)
+
+    # --- pull url from multipart field ---
+    if is_multipart and file is None:  # no file means maybe just a url part
+        form = await request.form()
+        url = form.get("url")
+
     if file is None and url is None:
-        raise HTTPException(400, "provide file or url")
+        raise HTTPException(400, "provide either file or url")
 
     if file is not None and url is not None:
-        raise HTTPException(400, "pick one of file / url")
+        raise HTTPException(400, "provide only one of file or url")
 
-    # multipart
+    # ---------- file path ----------
     if file is not None:
         dest = _unique_dest(file.filename)
         with open(dest, "wb") as out:
@@ -390,7 +435,8 @@ async def upload_endpoint(file: UploadFile | None = File(None), url: str | None 
         log.info("upload saved %s", dest)
         return {"status": "ok", "saved": os.path.basename(dest)}
 
-    # remote url
+    # ---------- remote url path ----------
+    log.info("downloading remote %s", url)
     try:
         resp = requests.get(url, stream=True, timeout=30)
     except Exception as e:
