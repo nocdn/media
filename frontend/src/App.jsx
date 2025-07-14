@@ -137,6 +137,8 @@ export default function App() {
 
   // ---------- render ----------
 
+  const [showingNowPlaying, setShowingNowPlaying] = useState(false);
+
   return (
     <div className="p-4 font-geist">
       <h1 className="mb-0 font-semibold">video stream</h1>
@@ -145,19 +147,40 @@ export default function App() {
         <p className="text-sm text-yellow-400 mt-1 mb-3">processing video…</p>
       )}
 
-      {!info && !processing && (
-        <p className="text-sm text-gray-500 mt-1 font-jetbrains-mono font-medium mb-3">
-          loading video...
-        </p>
-      )}
+      <AnimatePresence>
+        {!info && !processing && (
+          <motion.div
+            onAnimationComplete={() => setShowingNowPlaying(true)}
+            exit={{ opacity: 0, y: 10, filter: "blur(1px)" }}
+            transition={{ duration: 0.1 }}
+            className="text-sm text-gray-500 mt-1 font-jetbrains-mono font-medium mb-3"
+          >
+            loading video...
+          </motion.div>
+        )}
+      </AnimatePresence>
 
-      {info && !processing && (
-        <p className="text-sm text-gray-500 mt-1 font-jetbrains-mono font-medium mb-3 flex items-center">
+      {info && !processing && showingNowPlaying && (
+        <motion.div
+          initial={{ opacity: 0, y: -10, filter: "blur(1px)" }}
+          animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+          exit={{ opacity: 0, y: -10, filter: "blur(1px)" }}
+          className="text-sm text-gray-500 mt-1 font-jetbrains-mono font-medium mb-3 flex items-center"
+        >
           playing:{" "}
-          <span className="text-black dark:text-gray-200 ml-1.5">
-            {currentTitle ? `${currentTitle}.mp4` : info?.name}
-          </span>
-        </p>
+          <AnimatePresence mode="wait">
+            <motion.span
+              key={currentTitle ? currentTitle : info?.name}
+              initial={{ opacity: 0, filter: "blur(1px)", y: -3 }}
+              animate={{ opacity: 1, filter: "blur(0px)", y: 0 }}
+              exit={{ opacity: 0, filter: "blur(1px)", y: 3 }}
+              transition={{ duration: 0.15, ease: "easeInOut" }}
+              className="text-black dark:text-gray-200 ml-1.5"
+            >
+              {currentTitle ? `${currentTitle}.mp4` : info?.name}
+            </motion.span>
+          </AnimatePresence>
+        </motion.div>
       )}
 
       {!processing && (
