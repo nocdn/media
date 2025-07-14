@@ -112,7 +112,7 @@ export default function App() {
           <video
             key={currentTitle || "latest"} // force remount when title changes
             ref={videoRef}
-            width="860"
+            width="700"
             controls
             className="rounded-md"
             crossOrigin="anonymous"
