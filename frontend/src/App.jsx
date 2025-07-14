@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from "react";
-import { CirclePlay } from "lucide-react";
+import { CirclePlay, Check } from "lucide-react";
 import Spinner from "./spinner";
+import { AnimatePresence, motion } from "motion/react";
 
 export default function App() {
   const [info, setInfo] = useState(null);
@@ -12,6 +13,45 @@ export default function App() {
 
   const pollRef = useRef(null);
   const videoRef = useRef(null);
+  const lastUpdateTime = useRef(0);
+  const [showingRestored, setShowingRestored] = useState(false);
+
+  // ---------- progress tracking ----------
+
+  const saveProgress = () => {
+    if (!videoRef.current || !currentTitle) return;
+    const { currentTime } = videoRef.current;
+    if (currentTime > 0) {
+      localStorage.setItem(
+        `video-progress-${currentTitle}`,
+        String(currentTime)
+      );
+    }
+  };
+
+  const handleTimeUpdate = () => {
+    const now = Date.now();
+    if (now - lastUpdateTime.current < 3000) return;
+    saveProgress();
+    lastUpdateTime.current = now;
+  };
+
+  const restoreProgress = () => {
+    if (!videoRef.current || !currentTitle) return;
+    const savedTime = localStorage.getItem(`video-progress-${currentTitle}`);
+    if (savedTime) {
+      videoRef.current.currentTime = parseFloat(savedTime);
+      setShowingRestored(true);
+      setTimeout(() => {
+        setShowingRestored(false);
+      }, 2000);
+      console.log(
+        `restoring progress for ${currentTitle} to ${parseFloat(
+          savedTime
+        ).toFixed(2)}s`
+      );
+    }
+  };
 
   // ---------- helpers ----------
 
@@ -64,10 +104,17 @@ export default function App() {
     }
   }, [currentTitle]);
 
+  // save progress on tab close
+  useEffect(() => {
+    window.addEventListener("beforeunload", saveProgress);
+    return () => window.removeEventListener("beforeunload", saveProgress);
+  }, [currentTitle]);
+
   // ---------- ui handlers ----------
 
   const selectVideo = async (title) => {
     clearInterval(pollRef.current);
+    saveProgress();
     setProcessing(false);
     setCurrentTitle(title);
     try {
@@ -122,6 +169,8 @@ export default function App() {
             controls
             className="rounded-md"
             crossOrigin="anonymous"
+            onLoadedMetadata={restoreProgress}
+            onTimeUpdate={handleTimeUpdate}
           >
             {/* hls first (safari/ios) */}
             <source src={hlsSrc} type="application/x-mpegURL" />
@@ -162,6 +211,19 @@ export default function App() {
           </div>
         </div>
       )}
+      <AnimatePresence>
+        {showingRestored && (
+          <motion.div
+            className="w-fit font-jetbrains-mono text-green-700 font-semibold text-sm pl-1.5 mt-2.5 flex items-center gap-2"
+            initial={{ scale: 0, opacity: 0, y: -20 }}
+            animate={{ scale: 1, opacity: 1, y: 0 }}
+            exit={{ scale: 0, opacity: 0, y: -20 }}
+          >
+            <Check className="w-4 h-4" />
+            <p>progress restored</p>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
