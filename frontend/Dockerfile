@@ -3,9 +3,13 @@ FROM oven/bun:1.1.13 AS builder
 
 WORKDIR /app
 
-# Copy sources & install deps
-COPY . .
+# copying manifests and config first to leverage Docker cache.
+# copy vite.config.js because the build script depends on it.
+COPY package.json bun.lock vite.config.js ./
 RUN bun install --frozen-lockfile
+
+# Copy the rest of the source files
+COPY . .
 
 # Build production assets
 RUN bun run build

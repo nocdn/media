@@ -1,0 +1,12 @@
+# Ignore media and upload directories, as they are mounted as volumes
+media/
+uploads/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+.venv/ 
