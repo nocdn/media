@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef } from "react";
 import { CirclePlay, Check } from "lucide-react";
 import Spinner from "./spinner";
 import { AnimatePresence, motion } from "motion/react";
+import NowPlaying from "./NowPlaying";
 
 export default function App() {
   const [info, setInfo] = useState(null);
@@ -140,7 +141,7 @@ export default function App() {
   const [showingNowPlaying, setShowingNowPlaying] = useState(false);
 
   return (
-    <div className="p-4 font-geist">
+    <div className="py-4 px-7 font-geist">
       <h1 className="mb-0 font-semibold">video stream</h1>
 
       {processing && (

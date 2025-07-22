@@ -111,33 +111,42 @@ def process(src: str):
     os.makedirs(dest_dir, exist_ok=True)
     dst_mp4 = os.path.join(dest_dir, f"{name}.mp4")
 
-    # choose copy vs transcode for audio
-    if ext == ".mp4":
-        cmd = ["ffmpeg", "-y", "-i", src, "-c", "copy", "-movflags", "+faststart", dst_mp4]
+    # --- audio decision: always make sure final MP4 has AAC for browser support ---
+    acodec = audio_codec(src)
+    if acodec == "aac":
+        # streams already browser-friendly – quick re-wrap/copy
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            src,
+            "-c",
+            "copy",
+            "-movflags",
+            "+faststart",
+            dst_mp4,
+        ]
     else:
-        acodec = audio_codec(src)
-        if acodec == "aac":
-            cmd = ["ffmpeg", "-y", "-i", src, "-c", "copy", "-movflags", "+faststart", dst_mp4]
-        else:
-            cmd = [
-                "ffmpeg",
-                "-y",
-                "-i",
-                src,
-                "-c:v",
-                "copy",
-                "-c:a",
-                "aac",
-                "-ac",
-                "2",
-                "-b:a",
-                "128k",
-                "-ar",
-                "44100",
-                "-movflags",
-                "+faststart",
-                dst_mp4,
-            ]
+        # copy video, transcode audio → AAC stereo 128 kbps 48 kHz (widest support)
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            src,
+            "-c:v",
+            "copy",
+            "-c:a",
+            "aac",
+            "-ac",
+            "2",
+            "-b:a",
+            "128k",
+            "-ar",
+            "48000",
+            "-movflags",
+            "+faststart",
+            dst_mp4,
+        ]
 
     rc, _, _ = run(cmd)
     if rc:
@@ -187,7 +196,16 @@ def process(src: str):
 class VideoHandler(FileSystemEventHandler):
     """wait until the file is completely written before processing"""
 
+    def __init__(self, debounce: float = 2.0):
+        super().__init__()
+        # how long a file has to stay unchanged before we treat it as "ready"
+        self.debounce = debounce
+        # path -> Timer mapping so we can reset the timer on each modification
+        self._timers: dict[str, threading.Timer] = {}
+
     def _maybe_process(self, path: str):
+        # cancel any outstanding timer for this path (if we got here via Timer)
+        self._timers.pop(path, None)
         _, ext = os.path.splitext(path)
         if ext.lower() in {".mkv", ".mp4"}:
             log.info("file ready → %s", path)
@@ -202,6 +220,25 @@ class VideoHandler(FileSystemEventHandler):
     def on_moved(self, event):
         if not event.is_directory:
             self._maybe_process(event.dest_path)
+
+    # --- new: handle create/modify with debouncing ---
+    def _schedule(self, path: str):
+        """(re)start a timer; when it fires the file is assumed stable"""
+        existing = self._timers.pop(path, None)
+        if existing:
+            existing.cancel()
+
+        timer = threading.Timer(self.debounce, self._maybe_process, args=[path])
+        timer.start()
+        self._timers[path] = timer
+
+    def on_created(self, event):
+        if not event.is_directory:
+            self._schedule(event.src_path)
+
+    def on_modified(self, event):
+        if not event.is_directory:
+            self._schedule(event.src_path)
 
 # start watcher
 def start_watcher():
