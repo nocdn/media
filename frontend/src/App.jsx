@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from "react";
-import { CirclePlay, Check } from "lucide-react";
+import { CirclePlay, Check, X } from "lucide-react";
 import Spinner from "./spinner";
 import { AnimatePresence, motion } from "motion/react";
 
@@ -169,6 +169,27 @@ export default function App() {
     }
   };
 
+  // remove a processed video completely
+  const deleteVideo = async (title) => {
+    try {
+      const res = await fetch(`/api/media/${title}`, { method: "DELETE" });
+      if (!res.ok) throw new Error("delete failed");
+
+      // update lists locally
+      setMediaList((prev) => prev.filter((t) => t !== title));
+
+      // if we were playing this one, reset to latest (null triggers pollCurrent)
+      if (currentTitle === title) {
+        setCurrentTitle(null);
+        localStorage.removeItem("last-watched");
+        pollCurrent();
+      }
+    } catch (e) {
+      console.error(e);
+      console.log("Delete failed – check backend logs");
+    }
+  };
+
   // ---------- paths ----------
 
   const videoSrc = currentTitle ? `/api/video/${currentTitle}` : `/api/video`;
@@ -273,6 +294,13 @@ export default function App() {
                   strokeWidth={2.25}
                 />
                 {name}
+                <X
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    deleteVideo(name);
+                  }}
+                  className="h-4 w-4 text-red-700 hover:text-red-500 transition-all hover:scale-120 opacity-0 group-hover:opacity-100 cursor-pointer"
+                />
               </div>
             ))}
           </div>

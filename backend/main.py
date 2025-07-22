@@ -5,6 +5,7 @@ import time
 import subprocess
 import threading
 import logging
+import queue
 from typing import Optional
 import shutil
 import requests
@@ -191,6 +192,63 @@ def process(src: str):
     log.debug("upload removed %s", src)
 
 
+# ---------- serial processing queue ----------
+
+# we want to guarantee that only a single ffmpeg invocation runs at any time.
+# a simple Queue + worker thread gives us **strict** serial processing while
+# still allowing the watchdog to enqueue many files quickly.
+
+_PROCESS_Q: "queue.Queue[str]" = queue.Queue()
+_QUEUED: set[str] = set()
+_Q_LOCK = threading.Lock()
+
+
+def _enqueue(path: str):
+    """Add a path to the processing queue (deduplicated)."""
+    with _Q_LOCK:
+        if path in _QUEUED:
+            return  # already queued/processing
+        _QUEUED.add(path)
+        _PROCESS_Q.put(path)
+        log.info("queued %s", path)
+
+
+def _worker():
+    """Background worker that processes items strictly one-by-one."""
+    while True:
+        path = _PROCESS_Q.get()
+        try:
+            # wait until the file stops growing – this guards against cases
+            # where we catch a partially downloaded file (e.g. curl -o ...).
+            last_size = -1
+            while True:
+                try:
+                    size = os.path.getsize(path)
+                except FileNotFoundError:
+                    # may happen if the file got removed before we got to it
+                    log.warning("file disappeared before processing: %s", path)
+                    break
+
+                if size == last_size:
+                    # size stable → assume download finished
+                    break
+                last_size = size
+                time.sleep(2)  # wait a bit and re-check
+
+            # finally run the heavy lifting
+            process(path)
+        except Exception as e:
+            log.exception("processing error for %s: %s", path, e)
+        finally:
+            with _Q_LOCK:
+                _QUEUED.discard(path)
+            _PROCESS_Q.task_done()
+
+
+# start the single-worker thread
+threading.Thread(target=_worker, daemon=True).start()
+
+
 # ---------- file watcher ----------
 
 class VideoHandler(FileSystemEventHandler):
@@ -208,8 +266,8 @@ class VideoHandler(FileSystemEventHandler):
         self._timers.pop(path, None)
         _, ext = os.path.splitext(path)
         if ext.lower() in {".mkv", ".mp4"}:
-            log.info("file ready → %s", path)
-            process(path)
+            log.info("file ready → %s (queuing)", path)
+            _enqueue(path)
 
     # closed after writing (most reliable)
     def on_closed(self, event):
