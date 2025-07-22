@@ -2,14 +2,18 @@ import React, { useEffect, useState, useRef } from "react";
 import { CirclePlay, Check } from "lucide-react";
 import Spinner from "./spinner";
 import { AnimatePresence, motion } from "motion/react";
-import NowPlaying from "./NowPlaying";
 
 export default function App() {
   const [info, setInfo] = useState(null);
   const [processing, setProcessing] = useState(false);
   const [mediaList, setMediaList] = useState([]);
   const [mediaListLoading, setMediaListLoading] = useState(false);
-  const [currentTitle, setCurrentTitle] = useState(null);
+  // keep track of the last played title between visits
+  const [currentTitle, setCurrentTitle] = useState(() => {
+    // read from localStorage lazily so we only touch it once on mount
+    if (typeof window === "undefined") return null;
+    return localStorage.getItem("last-watched") || null;
+  });
   const [hasSubtitle, setHasSubtitle] = useState(false);
 
   const pollRef = useRef(null);
@@ -67,7 +71,16 @@ export default function App() {
       }
       setProcessing(false);
       setInfo(data);
-      setCurrentTitle(data.title ?? data.name.replace(/\.mp4$/, ""));
+
+      // do not override an explicitly watched title stored in localStorage
+      const saved = localStorage.getItem("last-watched");
+      if (!saved) {
+        const newTitle = data.title ?? data.name.replace(/\.mp4$/, "");
+        setCurrentTitle(newTitle);
+        // stash for next visit so we remember what was auto-played
+        localStorage.setItem("last-watched", newTitle);
+      }
+
       setHasSubtitle(!!data.subtitle);
     } catch (_) {}
   };
@@ -111,6 +124,34 @@ export default function App() {
     return () => window.removeEventListener("beforeunload", saveProgress);
   }, [currentTitle]);
 
+  // whenever "currentTitle" changes, (re)check if subtitles are available
+  useEffect(() => {
+    const checkSubtitle = async () => {
+      if (!currentTitle) return;
+      try {
+        const res = await fetch(`/api/subtitle/${currentTitle}`, {
+          method: "HEAD",
+        });
+        setHasSubtitle(res.ok);
+      } catch {
+        setHasSubtitle(false);
+      }
+    };
+    checkSubtitle();
+  }, [currentTitle]);
+
+  // if the remembered title is no longer in the media list, fall back to latest
+  useEffect(() => {
+    if (
+      currentTitle &&
+      mediaList.length > 0 &&
+      !mediaList.includes(currentTitle)
+    ) {
+      setCurrentTitle(null);
+      localStorage.removeItem("last-watched");
+    }
+  }, [mediaList]);
+
   // ---------- ui handlers ----------
 
   const selectVideo = async (title) => {
@@ -118,6 +159,8 @@ export default function App() {
     saveProgress();
     setProcessing(false);
     setCurrentTitle(title);
+    // remember choice for next visit
+    localStorage.setItem("last-watched", title);
     try {
       const res = await fetch(`/api/subtitle/${title}`, { method: "HEAD" });
       setHasSubtitle(res.ok);
