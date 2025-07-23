@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from "react";
-import { CirclePlay, Check, X } from "lucide-react";
+import { CirclePlay, Check, X, Plus, Folder } from "lucide-react";
 import Spinner from "./spinner";
 import { AnimatePresence, motion } from "motion/react";
 
@@ -20,6 +20,10 @@ export default function App() {
   const videoRef = useRef(null);
   const lastUpdateTime = useRef(0);
   const [showingRestored, setShowingRestored] = useState(false);
+
+  // ----------- upload helpers -----------
+  const [urlInput, setUrlInput] = useState("");
+  const fileInputRef = useRef(null);
 
   // ---------- progress tracking ----------
 
@@ -190,6 +194,51 @@ export default function App() {
     }
   };
 
+  // ---------- upload handlers ----------
+
+  const uploadUrl = async () => {
+    const url = urlInput.trim();
+    if (!url) return;
+    try {
+      // backend accepts raw JSON string
+      await fetch(`/api/upload`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(url),
+      });
+      setUrlInput("");
+      // show processing indicator (backend will pick it up)
+      setProcessing(true);
+      // refresh list in a few seconds
+      setTimeout(fetchMedia, 5000);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const onUrlKeyDown = (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      uploadUrl();
+    }
+  };
+
+  const uploadFile = async (file) => {
+    if (!file) return;
+    const fd = new FormData();
+    fd.append("file", file);
+    try {
+      await fetch(`/api/upload`, {
+        method: "POST",
+        body: fd,
+      });
+      setProcessing(true);
+      setTimeout(fetchMedia, 5000);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   // ---------- paths ----------
 
   const videoSrc = currentTitle ? `/api/video/${currentTitle}` : `/api/video`;
@@ -206,7 +255,33 @@ export default function App() {
 
   return (
     <div className="py-4 px-7 font-geist">
-      <h1 className="mb-0 font-semibold">video stream</h1>
+      <div className="flex items-center gap-2 group">
+        <h1 className="mb-0 font-semibold">video stream</h1>
+        <input
+          type="text"
+          placeholder="url to download"
+          value={urlInput}
+          onChange={(e) => setUrlInput(e.target.value)}
+          onKeyDown={onUrlKeyDown}
+          className="border border-gray-300 rounded-lg p-1.5 py-[7px] pl-2.5 mt-2 ml-2 font-jetbrains-mono font-semibold text-sm opacity-0 group-hover:opacity-100 transition-opacity focus:outline-none focus:ring-1 focus:ring-gray-300"
+        />
+        <div
+          className="border border-gray-200 rounded-lg py-[7px] px-3 mt-2 ml-2 font-jetbrains-mono text-sm font-medium cursor-pointer text-gray-500 hover:text-gray-800 hover:bg-gray-100 opacity-0 group-hover:opacity-100 transition-opacity"
+          onClick={() => fileInputRef.current?.click()}
+        >
+          file
+        </div>
+        <input
+          type="file"
+          ref={fileInputRef}
+          className="hidden"
+          onChange={(e) => {
+            uploadFile(e.target.files?.[0]);
+            // reset value so selecting same file again works
+            e.target.value = "";
+          }}
+        />
+      </div>
 
       {processing && (
         <p className="text-sm text-yellow-400 mt-1 mb-3">processing video…</p>
