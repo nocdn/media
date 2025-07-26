@@ -9,6 +9,7 @@ import queue
 from typing import Optional
 import shutil
 import requests
+from urllib.parse import unquote
 
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -540,7 +541,9 @@ async def upload_endpoint(
     if resp.status_code != 200:
         raise HTTPException(400, f"status {resp.status_code}")
 
+    # Extract filename and decode URL-encoded characters
     filename = url.split("/")[-1].split("?")[0] or f"{uuid.uuid4().hex}.video"
+    filename = unquote(filename)  # Decode %20 to spaces, etc.
     dest = _unique_dest(filename)
 
     try:
