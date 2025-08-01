@@ -142,7 +142,7 @@ backend/
 A ready-made **docker-compose.yml** builds and runs both services.
 
 ```bash
-docker compose up -d --build
+cd frontend && bun run build && cd .. && docker compose up -d --build
 
 # open:
 # → frontend  http://localhost:9410
