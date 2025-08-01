@@ -1,0 +1,1 @@
+cd frontend && bun install && bun run build && cd .. && docker compose up -d --build

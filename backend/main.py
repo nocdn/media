@@ -6,7 +6,9 @@ import subprocess
 import threading
 import logging
 import queue
+import re
 from typing import Optional
+from dotenv import load_dotenv
 import shutil
 import requests
 from urllib.parse import unquote
@@ -31,6 +33,9 @@ UPLOADS_DIR = os.path.join(BASE_DIR, "uploads")
 MEDIA_DIR = os.path.join(BASE_DIR, "media")
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 os.makedirs(MEDIA_DIR, exist_ok=True)
+
+# Load environment variables from .env (searching up parent dirs)
+load_dotenv()
 
 # ---------- fastapi ----------
 app = FastAPI()
@@ -571,3 +576,101 @@ def delete_media(title: str):
     shutil.rmtree(dir_path)
     log.info("deleted %s", dir_path)
     return {"status": "deleted", "title": title}
+
+# ---------- ai rename ----------
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+MODEL_ID = "gemini-2.5-flash-preview-05-20"
+AI_RENAME_PROMPT = (
+    "Rename the given filename by the user, ensuring clarity and brevity. Retain essential elements like names, chapter numbers, episode codes, dates, etc., replacing underscores and dashes with spaces (unless it is times or dates, then keep the dates combined with dashes only, use DD-MM-YYYY). Capitalise first letters. Never capilatize the word 'and'. Remove non-informative text like 'version', 'final', 'edit', or repetitive information. Provide the new filename without the extension. Expand abbreviations like 'lang' to language. NEVER use quotes. For TV series use this format: [Film title with capitalized first letters of each word] [Episode code]. In TV series, remove the year from the filename, but keep it in brackets for movies. Examples: 'thesis_final_edit_v2' becomes 'Thesis V2'; 'JohnDoe_Report_Version_23.10.2021' becomes 'John Doe Report 23-10-2021'; 'Barbie.2023.HC.1080p.WEB-DL.AAC2.0.H.264-APEX[TGx]' becomes 'Barbie (2023)'; 'What.If.2021.S02E08.WEB.x264-TORRENTGALAXY' becomes 'What If S02E08'. "
+)
+
+_RENAME_LOCK = threading.Lock()
+
+
+def _sanitize_filename(name: str) -> str:
+    name = name.strip()
+    name = name.replace("\"", "").replace("'", "")
+    # drop extension if present
+    name = re.sub(r"\.(mp4|mkv|webm|mov|avi)$", "", name, flags=re.IGNORECASE)
+    # disallow path separators
+    name = name.replace("/", "-").replace("\\", "-")
+    # collapse whitespace
+    name = " ".join(name.split())
+    return name
+
+
+def _ai_rename(original_name: str) -> str:
+    if not GEMINI_API_KEY:
+        raise HTTPException(500, "GEMINI_API_KEY env not set")
+
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_ID}:generateContent?key={GEMINI_API_KEY}"
+    )
+    payload = {
+        "contents": [{"role": "user", "parts": [{"text": original_name}]}],
+        "systemInstruction": {"parts": [{"text": AI_RENAME_PROMPT}]},
+        "generationConfig": {
+            "thinkingConfig": {"thinkingBudget": 0},
+            "responseMimeType": "text/plain",
+        },
+    }
+    try:
+        resp = requests.post(url, json=payload, timeout=30)
+    except Exception as e:
+        log.error("gemini request error: %s", e)
+        raise HTTPException(500, "gemini request failed")
+
+    if resp.status_code != 200:
+        log.error("gemini status %s: %s", resp.status_code, resp.text[:200])
+        raise HTTPException(500, f"gemini status {resp.status_code}")
+
+    try:
+        data = resp.json()
+        new = (
+            data.get("candidates", [{}])[0]
+            .get("content", {})
+            .get("parts", [{}])[0]
+            .get("text", "")
+        )
+    except Exception as e:
+        log.error("gemini parse error: %s", e)
+        raise HTTPException(500, "gemini parse failed")
+
+    if not new:
+        raise HTTPException(500, "gemini returned empty name")
+
+    return _sanitize_filename(new)
+
+
+@app.post("/rename/{title}")
+def rename_media(title: str):
+    """AI rename a processed media folder/title."""
+    old_dir = os.path.join(MEDIA_DIR, title)
+    if not os.path.isdir(old_dir):
+        raise HTTPException(404, "not found")
+
+    with _RENAME_LOCK:
+        new_title = _ai_rename(f"{title}.mp4")
+        # Fast sanity check
+        if new_title == title:
+            return {"status": "unchanged", "title": title}
+        new_dir = os.path.join(MEDIA_DIR, new_title)
+        if os.path.exists(new_dir):
+            raise HTTPException(400, "target exists")
+
+        # rename inner files first so they get moved along with the folder
+        mp4_old = os.path.join(old_dir, f"{title}.mp4")
+        mp4_new = os.path.join(old_dir, f"{new_title}.mp4")
+        if os.path.exists(mp4_old):
+            os.rename(mp4_old, mp4_new)
+
+        vtt_old = os.path.join(old_dir, f"{title}.vtt")
+        vtt_new = os.path.join(old_dir, f"{new_title}.vtt")
+        if os.path.exists(vtt_old):
+            os.rename(vtt_old, vtt_new)
+
+        # finally rename directory
+        os.rename(old_dir, new_dir)
+
+    log.info("renamed '%s' -> '%s'", title, new_title)
+    return {"status": "renamed", "old": title, "new": new_title}

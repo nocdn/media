@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from "react";
-import { CirclePlay, Check, X, Plus, Folder } from "lucide-react";
+import { CirclePlay, Check, X, Sparkles, WandSparkles } from "lucide-react";
 import Spinner from "./spinner";
 import { AnimatePresence, motion } from "motion/react";
 
@@ -194,6 +194,26 @@ export default function App() {
     }
   };
 
+  // rename a video title via AI
+  const renameVideo = async (title) => {
+    try {
+      const res = await fetch(`/api/rename/${title}`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.detail || "rename failed");
+
+      // re-fetch list so UI stays in sync
+      await fetchMedia();
+
+      if (currentTitle === title) {
+        setCurrentTitle(data.new);
+        localStorage.setItem("last-watched", data.new);
+      }
+    } catch (e) {
+      console.error(e);
+      console.log("Rename failed – check backend logs");
+    }
+  };
+
   // ---------- upload handlers ----------
 
   const uploadUrl = async () => {
@@ -369,6 +389,13 @@ export default function App() {
                   strokeWidth={2.25}
                 />
                 {name}
+                <WandSparkles
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    renameVideo(name);
+                  }}
+                  className="w-3.5 h-3.5 text-blue-700 hover:text-blue-600 transition-all hover:scale-120 opacity-0 group-hover:opacity-100 cursor-pointer"
+                />
                 <X
                   onClick={(e) => {
                     e.stopPropagation();
